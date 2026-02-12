@@ -1,0 +1,222 @@
+= Boomi Execution Document Library
+mat-ocl <mat-ocl@proton.me>
+v1.0, 2026‑02‑12
+:toc: macro
+:toclevels: 2
+:source-highlighter: rouge
+:icons: font
+:sectnums:
+
+== Overview
+
+This PowerShell module provides a small set of helper functions to interact with the
+Boomi REST API for fetching all documents related to an executionID.  It supports:
+
+* Authenticating with Boomi using HTTP Basic authentication.
+* Querying execution‑level connector information.
+* Retrieving generic connector records (including pagination).
+* Downloading documents attached to those records.
+* Running the whole workflow in parallel for speed.
+
+The script assumes PowerShell 3.0+ and forces TLS 1.2 for secure communication.
+
+== Prerequisites
+
+* PowerShell 3.0 or newer.
+* An active Boomi account with API access.
+* Variables `user`, `token`, `accountid` and `executionID` must be defined
+  before invoking the functions (or passed as parameters where indicated).
+
+== Usage
+Define the variables. Import the Library file. Call functions.
+[source,powershell]
+----
+# --- Import the Lib ---
+. .\BoomiExecutionDocumentLib.ps1
+
+# --- Do the magic ---
+$login = BoomiLogin
+$connectors = Get-BoomiConnectorsForExecution
+Get-AllConnectorDocuments
+----
+
+
+== Functions Reference
+
+=== `BoomiLogin`
+
+Creates an encrypted and Base‑64 encoded credential string for the `Authorization: Basic …` header.
+
+[options="header"]
+|===
+| Parameter | Type | Description | Required?
+| `$user`   | `string` | Boomi username (email). | Yes
+| `$token`  | `string` | API token / password. | Yes
+|===
+
+*Returns*: Base‑64 string.
+
+*Example*:
+
+[source,powershell]
+----
+$login = BoomiLogin
+----
+
+=== `Get-BoomiConnectorsForExecution`
+
+Queries Boomi for the connectors used by a particular execution.
+
+[options="header"]
+|===
+| Parameter | Type | Description | Required?
+| `$accountid`   | `string` | Boomi account ID. | Yes
+| `$executionID` | `string` | Execution identifier. | Yes
+| `$login`       | `string` | Authorization header (output of `BoomiLogin`). | Yes
+|===
+
+*Returns*: JSON object containing the connector list.
+
+*Example*:
+
+[source,powershell]
+----
+$connectors = Get-BoomiConnectorsForExecution
+----
+
+=== `Get-BoomiRecords`
+
+Retrieves generic connector records for a given connector within an execution.
+
+[options="header"]
+|===
+| Parameter      | Type   | Description                                 | Required?
+| `$connectorname`| `string`| Name of the connector (operationName).     | Yes
+| `$recordID`     | `string`| Execution connector ID.                     | Yes
+| `$executionID`  | `string`| Execution identifier.                      | Yes
+| `$accountID`    | `string`| Boomi account ID.                           | Yes
+| `$login`        | `string`| Authorization header.                       | Yes
+|===
+
+*Returns*: An `[ArrayList]` of record objects. Handles pagination automatically.
+
+*Example*:
+
+[source,powershell]
+----
+$records = Get-BoomiRecords -connectorname $cName `
+                            -recordID $cId `
+                            -executionID $executionID `
+                            -accountID $accountid `
+                            -login $login
+----
+
+=== `Get-BoomiConnectorDocument`
+
+Downloads a single document belonging to a generic connector record.
+
+[options="header"]
+|===
+| Parameter | Type   | Description                              | Required?
+| `$rec`    | `object`| Record object returned by `Get-BoomiRecords`. | Yes
+| `$fileName`| `string`| Desired base name for the saved file (without extension). | Yes
+| `$Path`   | `string`| Destination folder (usually the execution ID). | Yes
+| `$login`  | `string`| Authorization header.                     | Yes
+|===
+
+*Behaviour*:
+
+* Calls `ConnectorDocument` endpoint to obtain a temporary URL.
+* Polls the URL until the file contains non‑empty content.
+* Saves the file as `<index>_<fileName>.txt`.
+
+*Example*:
+
+[source,powershell]
+----
+Get-BoomiConnectorDocument -rec $record `
+                           -fileName "Invoice" `
+                           -Path $executionID `
+                           -login $login
+----
+
+=== `FixPath`
+
+Utility that sanitises a path component by replacing any invalid Windows filename characters with an underscore (`_`).
+
+[options="header"]
+|===
+| Parameter | Type   | Description | Required?
+| `$path`   | `string`| Raw path segment. | Yes
+|===
+
+*Returns*: Cleaned string safe for use in file names.
+
+*Example*:
+
+[source,powershell]
+----
+$clean = FixPath -path $rawConnectorName
+----
+
+=== `Get-AllConnectorDocuments`
+
+High‑level orchestrator that:
+
+1. Creates a folder named after `$executionID`.
+2. Retrieves the list of connectors (`$connectors.result` is expected to be populated beforehand).
+3. For each connector, fetches its records in parallel (max 5 concurrent jobs).
+4. For each record, downloads the associated document in parallel (again max 5 jobs).
+
+[options="header"]
+|===
+| Parameter | Type   | Description | Required?
+| None – relies on global variables: `$executionID`, `$login`, `$accountID`, `$connectors`. |
+|===
+
+*Example* (after you have populated `$connectors`):
+
+[source,powershell]
+----
+Get-AllConnectorDocuments
+----
+
+== Usage Walkthrough
+
+Below is a minimal end‑to‑end script that demonstrates the typical flow:
+
+[source,powershell]
+----
+# ----- Configuration ---------------------------------------------------------
+$user        = "BOOMI_TOKEN.your.email@company.com"
+$token       = "YOUR_API_TOKEN"
+$accountid   = "1234567890abcdef"
+$executionID = "abcd-1234-efgh-5678"
+
+# ----- Import the Library ----------------------------------------------------
+. .\BoomiExecutionDocumentLib.ps1
+
+# ----- Authentication --------------------------------------------------------
+$login = BoomiLogin   # creates the Basic auth header
+
+# ----- Retrieve connectors ---------------------------------------------------
+$connectors = Get-BoomiConnectorsForExecution
+
+# ----- Pull all documents ----------------------------------------------------
+Get-AllConnectorDocuments
+----
+
+Running the script will create a folder named after the execution ID and populate it
+with text files named `<index>_<connectorName>.txt`.
+
+== Notes & Gotchas
+
+* The script forces TLS 1.2 (`[System.Net.ServicePointManager]::SecurityProtocol = [System.Net.SecurityProtocolType]::Tls12`).  
+  Ensure your environment supports it; older Windows versions may need updates.
+* Parallel execution (`-Parallel`) requires PowerShell 7+ or the *ThreadJob* module on Windows PowerShell 5.1.
+* The `Invoke‑RestMethod` calls expect JSON bodies; if Boomi changes its API schema you’ll need to adjust the payload structures accordingly.
+* Error handling is minimal – you may want to wrap calls in `try / catch` blocks for production use.
+
+== License
+
+This helper library is provided under the MIT License. Feel free to adapt it to your own automation workflows.
